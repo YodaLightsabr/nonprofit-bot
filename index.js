@@ -149,7 +149,7 @@ app.message(async ({ message, say }) => {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "I've found a few results for your query *" + message.text.trim() + "*: _" + results + "_"
+                    "text": "I've found a few results for your query *" + message.text.trim().split('>').join('`>`').split('@').join('`@`').split('<').join('`<`') + "*: _" + results + "_"
                 }
             },
             {
