@@ -5,6 +5,7 @@ import { reactions, react, staticReact } from './reactions.js';
 import SlackBolt from '@slack/bolt';
 import SlackWebAPI from '@slack/web-api';
 import JSON5 from 'json5';
+import { states } from './states.js';
 
 const { App } = SlackBolt;
 const { WebClient } = SlackWebAPI;
@@ -81,6 +82,24 @@ app.message(async ({ message, say }) => {
     const response = await fetch(url);
     const json = await response.json();
 
+    if (request.org.toLowerCase().startsWith('the')) {
+        request.org = request.org.substring(3).trim();
+        const url2 = `https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`;
+        const response2 = await fetch(url2);
+        const json2 = await response2.json();
+        for (const item of json2) {
+            json.push(item);
+        }
+    } else {
+        request.org = 'The ' + request.org;
+        const url2 = `https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`;
+        const response2 = await fetch(url2);
+        const json2 = await response2.json();
+        for (const item of json2) {
+            json.push(item);
+        }
+    }
+
     if (!json.length || (json[0] && json[0]["0"] == "There are no data records to display.")) {
         web.reactions.remove({
             channel: message.channel,
@@ -107,65 +126,138 @@ app.message(async ({ message, say }) => {
         name: thumbsUp
     });
 
-    let messages = [];
-    let results = `(${json.length} results in ${prettyTime(Date.now() - start)})`;
+    let end = Date.now();
 
-    messages.push({
-        blocks: [
+    const orgs = [];
+
+    for (const org of json) {
+        if (!org["EIN"].split('').filter(c => /[0-9]/.test(c)).length) continue; 
+        if (orgs.map(org => org.ein).includes(org["EIN"])) continue;
+        orgs.push({ ein: org.EIN, name: org["Organization Name"], state: org.State });
+    }
+
+    let results = `(${orgs.length} results in ${prettyTime(end - start)})`;
+
+    
+    const messageData = {
+        text: "I've found some results for your query.",
+        "blocks": [
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": ":cat_typing: Here you go: _" + results + "_"
+                    "text": "I've found a few results for your query *" + message.text.trim() + "*: _" + results + "_"
                 }
-            }
-        ], thread_ts: message.ts
-    });
-
-    for (const result of json) {
-        if (messages[messages.length - 1].blocks.length >= 48) messages.push({ blocks: [], thread_ts: message.ts });
-        messages[messages.length - 1].blocks = [
-            ...messages[messages.length - 1].blocks,
-            ...(messages[messages.length - 1].blocks.length ? [{
+            },
+            {
                 "type": "divider"
-            }] : []),
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": `${result["Organization Name"]} - ${result.Year} (${result.State})`,
-                    "emoji": true
-                }
             },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": `*EIN:* ${result.EIN}\n*Form:* ${result.Form}\n*Total Assets:* ${result["Total assets"]}`
-                }
-            },
-            {
-                "type": "actions",
-                "elements": [
+            ...(() => {
+                const combined = [];
+                const data = (orgs.map(result => ([
                     {
-                        "type": "button",
+                        "type": "header",
                         "text": {
                             "type": "plain_text",
-                            "emoji": true,
-                            "text": "Open Form ➡️"
-        
+                            "text": `${result.name} (${states[result.state] || result.state})`,
+                            "emoji": true
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": `#️⃣ *EIN:* ${result.ein}`
                         },
-                        "value": "click_me",
-                        "url": result.Link.startsWith('//') ? `https:${result.Link}` : result.Link
+                        "accessory": {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "Select",
+                                "emoji": true
+                            },
+                            "value": result.ein.split('-').join(''),
+                            "action_id": "select"
+                        }
+                    },
+                    {
+                        "type": "divider"
                     }
-                ]
-            }
-        ]
+                ])));
+                data.forEach(a => combined.push(...a));
+                return combined;
+            })()
+        ],
+        thread_ts: message.ts
+    };
+
+    await say(messageData);
+
+});
+
+app.action('select', async (args) => {
+    const { body, ack, say, payload } = args;
+    const { thread_ts } = body.message;
+    
+    const blocks = body.message.blocks;
+    const newBlocks = blocks.map(block => {
+        if (block.type === "section" && block.accessory && block.accessory.action_id === "select") {
+            if (block.accessory.value == payload.value) block.text.text += ' - ✅ Selected';
+            delete block.accessory;
+        }
+        return block;
+    });
+    
+    // Acknowledge the action
+    await ack();
+
+    await web.chat.update({
+        channel: 'C03JKV42ZQD',
+        ts: body.message.ts,
+        blocks: newBlocks
+    });
+
+    const ein = payload.value;
+
+    const response = await fetch('https://nonprofit.yodacode.xyz/api?ein=' + ein);
+    const json = await response.json();
+
+    let forms = [];
+
+    for (const form of json) {
+        if (!forms.map(f => f.link).includes(form.link)) forms.push({
+            link: form.Link,
+            year: form.Year,
+            form: form.Form,
+            assets: form["Total assets"],
+            name: `${form["Organization Name"]} ${form.Year} ${form.Form} Form.pdf`
+        });
     }
 
-    for (const message of messages) {
-        await say(message);
+    forms = forms.sort((a, b) => (+a.year - +b.year));
+
+    const links = [];
+    let i = 0;
+    for (const form of forms) {
+
+        console.log('Downloading file', form.name);
+        const buffer = await fetch(form.link.startsWith('//') ? 'https:' + form.link : form.link).then(res => res.buffer());
+
+        console.log('Downloaded; uploading to Slack');
+
+        const output = await web.files.upload({
+            filename: form.name,
+            file: buffer,
+            thread_ts,
+            initial_comment: `${form.year} - File ${i + 1} of ${forms.length}`,
+            // title: form.name,
+            channels: 'C03JKV42ZQD'
+        });
+
+        links.push(output.file.permalink);
+        i++;
     }
+
 });
 
 (async () => {
