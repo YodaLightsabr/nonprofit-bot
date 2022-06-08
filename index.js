@@ -16,6 +16,8 @@ const app = new App({
     socketMode: true,
 });
 
+const payloads = [];
+
 async function fetchBuffer (...args) {
     const res = await fetch(...args);
     const buffer = await res.buffer();
@@ -128,14 +130,18 @@ app.message(async ({ message, say }) => {
     const orgs = [];
 
     for (const org of json) {
-        if (!org["EIN"].split('').filter(c => /[0-9]/.test(c)).length) continue; 
-        if (orgs.map(org => org.ein).includes(org["EIN"])) continue;
-        orgs.push({ ein: org.EIN, name: org["Organization Name"], state: org.State });
+        if (!org["EIN"] || !org["EIN"].split('').filter(c => /[0-9]/.test(c)).length) continue; 
+        if (orgs.map(org => org.ein).includes(org["EIN"])) {
+            orgs[orgs.map(org => org.ein).indexOf(org.EIN)].count++;
+            continue;
+        }
+        orgs.push({ ein: org.EIN, name: org["Organization Name"], state: org.State, count: 1 });
     }
 
     let results = `(${orgs.length} results in ${prettyTime(end - start)})`;
 
-    
+    const thisId = Math.floor(Math.random() * 1000000);
+
     const messageData = {
         text: "I've found some results for your query.",
         "blocks": [
@@ -156,7 +162,7 @@ app.message(async ({ message, say }) => {
                         "type": "header",
                         "text": {
                             "type": "plain_text",
-                            "text": `${result.name} (${states[result.state] || result.state})`,
+                            "text": `${result.name} (:us-states-${result.state.toLowerCase()}: ${states[result.state] || result.state})`,
                             "emoji": true
                         }
                     },
@@ -164,7 +170,7 @@ app.message(async ({ message, say }) => {
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": `#️⃣ *EIN:* ${result.ein}`
+                            "text": `#️⃣ *EIN:* ${result.ein}  -  🗄️ *Files:* ${result.count}`
                         },
                         "accessory": {
                             "type": "button",
@@ -173,7 +179,7 @@ app.message(async ({ message, say }) => {
                                 "text": "Select",
                                 "emoji": true
                             },
-                            "value": result.ein.split('-').join(''),
+                            "value": result.ein.split('-').join('') + '/' + thisId,
                             "action_id": "select"
                         }
                     },
@@ -205,12 +211,15 @@ app.message(async ({ message, say }) => {
 
 app.action('select', async (args) => {
     const { body, ack, say, payload } = args;
+    if (payloads.includes(payload.value.split("/")[1])) return;
+    else payloads.push(payload.value.split("/")[1]);
+
     const { thread_ts } = body.message;
     
     const blocks = body.message.blocks;
     const newBlocks = blocks.map(block => {
         if (block.type === "section" && block.accessory && block.accessory.action_id === "select") {
-            if (block.accessory.value == payload.value) block.text.text += ' - ✅ Selected';
+            if (block.accessory.value == payload.value) block.text.text += '  -  ✅ Selected';
             delete block.accessory;
         }
         return block;
@@ -222,10 +231,13 @@ app.action('select', async (args) => {
     web.chat.update({
         channel: 'C03JKV42ZQD',
         ts: body.message.ts,
-        blocks: newBlocks
+        blocks: newBlocks,
+        text: "Results"
+    }).then(() => {
+        if (payloads.includes(payload.value.split("/")[1])) payloads.splice(payloads.indexOf(payload.value.split("/")[1]), 1);
     });
 
-    const ein = payload.value;
+    const ein = payload.value.split('/')[0];
 
     const response = await fetch('https://nonprofit.yodacode.xyz/api?ein=' + ein);
     const json = await response.json();
@@ -247,9 +259,8 @@ app.action('select', async (args) => {
 
     const links = [];
 
-    const files = Promise.all(
-        forms.map(form => fetchBuffer(form.link.startsWith('//') ? 'https:' + form.link : form.link))
-    );
+    const promises = forms.map(form => fetchBuffer(form.link.startsWith('//') ? 'https:' + form.link : form.link));
+    const files = await Promise.all(promises);
 
     let i = 0;
 
@@ -260,17 +271,24 @@ app.action('select', async (args) => {
         // const buffer = await fetch(form.link.startsWith('//') ? 'https:' + form.link : form.link).then(res => res.buffer());
 
         console.log('Downloaded; uploading to Slack');
+        try {
+            console.log(form.link);
+            const output = await web.files.upload({
+                filename: form.name,
+                file: buffer,
+                thread_ts,
+                initial_comment: `${form.year} - File ${i + 1} of ${forms.length}`,
+                // title: form.name,
+                channels: 'C03JKV42ZQD'
+            });
+        } catch (err) {
+            console.error(err);
+            await say({
+                thread_ts,
+                text: `Error uploading file ${i + 1} of ${forms.length}`
+            });
+        }
 
-        const output = await web.files.upload({
-            filename: form.name,
-            file: buffer,
-            thread_ts,
-            initial_comment: `${form.year} - File ${i + 1} of ${forms.length}`,
-            // title: form.name,
-            channels: 'C03JKV42ZQD'
-        });
-
-        links.push(output.file.permalink);
         i++;
     }
 
