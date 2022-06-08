@@ -16,6 +16,18 @@ const app = new App({
     socketMode: true,
 });
 
+async function fetchBuffer (...args) {
+    const res = await fetch(...args);
+    const buffer = await res.buffer();
+    return buffer;
+}
+
+async function fetchJson (...args) {
+    const res = await fetch(...args);
+    const json = await res.json();
+    return json;
+}
+
 function prettyTime (ms) {
     if (ms < 1000) return `${Math.floor(ms)}ms`;
     return `${Math.floor(ms / 1000)}s`;
@@ -47,7 +59,7 @@ app.message(async ({ message, say }) => {
 
     let request = {};
 
-    await web.reactions.add({
+    web.reactions.add({
         channel: message.channel,
         timestamp: message.ts,
         name: loading
@@ -78,26 +90,21 @@ app.message(async ({ message, say }) => {
 
     if (request.ein) request.ein = request.ein.split('-').join('');
 
-    const url = `https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`;
-    const response = await fetch(url);
-    const json = await response.json();
+    const promise1 = fetchJson(`https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`);
+    let json;
 
-    if (request.org.toLowerCase().startsWith('the')) {
+    if (request.org && request.org.toLowerCase().startsWith('the')) {
         request.org = request.org.substring(3).trim();
-        const url2 = `https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`;
-        const response2 = await fetch(url2);
-        const json2 = await response2.json();
-        for (const item of json2) {
-            json.push(item);
-        }
-    } else {
+        const promise2 = fetchJson(`https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`);
+        const responses = await Promise.all([promise1, promise2]);
+        json = [...responses[0], ...responses[1]];
+    } else if (request.org) {
         request.org = 'The ' + request.org;
-        const url2 = `https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`;
-        const response2 = await fetch(url2);
-        const json2 = await response2.json();
-        for (const item of json2) {
-            json.push(item);
-        }
+        const promise2 = fetchJson(`https://nonprofit.yodacode.xyz/api?${Object.keys(request).map(key => `${key}=${encodeURIComponent(request[key])}`).join('&')}`);
+        const responses = await Promise.all([promise1, promise2]);
+        json = [...responses[0], ...responses[1]];
+    } else {
+        json = await promise1;
     }
 
     if (!json.length || (json[0] && json[0]["0"] == "There are no data records to display.")) {
@@ -115,16 +122,6 @@ app.message(async ({ message, say }) => {
         return;
     }
 
-    web.reactions.remove({
-        channel: message.channel,
-        timestamp: message.ts,
-        name: loading
-    });
-    web.reactions.add({
-        channel: message.channel,
-        timestamp: message.ts,
-        name: thumbsUp
-    });
 
     let end = Date.now();
 
@@ -187,11 +184,22 @@ app.message(async ({ message, say }) => {
                 data.forEach(a => combined.push(...a));
                 return combined;
             })()
-        ],
+        ].filter((_, i) => i < 50),
         thread_ts: message.ts
     };
 
     await say(messageData);
+
+    web.reactions.remove({
+        channel: message.channel,
+        timestamp: message.ts,
+        name: loading
+    });
+    web.reactions.add({
+        channel: message.channel,
+        timestamp: message.ts,
+        name: thumbsUp
+    });
 
 });
 
@@ -209,9 +217,9 @@ app.action('select', async (args) => {
     });
     
     // Acknowledge the action
-    await ack();
+    ack();
 
-    await web.chat.update({
+    web.chat.update({
         channel: 'C03JKV42ZQD',
         ts: body.message.ts,
         blocks: newBlocks
@@ -223,6 +231,7 @@ app.action('select', async (args) => {
     const json = await response.json();
 
     let forms = [];
+
 
     for (const form of json) {
         if (!forms.map(f => f.link).includes(form.link)) forms.push({
@@ -237,11 +246,18 @@ app.action('select', async (args) => {
     forms = forms.sort((a, b) => (+a.year - +b.year));
 
     const links = [];
-    let i = 0;
-    for (const form of forms) {
 
-        console.log('Downloading file', form.name);
-        const buffer = await fetch(form.link.startsWith('//') ? 'https:' + form.link : form.link).then(res => res.buffer());
+    const files = Promise.all(
+        forms.map(form => fetchBuffer(form.link.startsWith('//') ? 'https:' + form.link : form.link))
+    );
+
+    let i = 0;
+
+    for (const form of forms) {
+        const buffer = files[i];
+
+        // console.log('Downloading file', form.name);
+        // const buffer = await fetch(form.link.startsWith('//') ? 'https:' + form.link : form.link).then(res => res.buffer());
 
         console.log('Downloaded; uploading to Slack');
 
