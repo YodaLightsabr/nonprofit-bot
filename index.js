@@ -120,7 +120,7 @@ app.message(async ({ message, say }) => {
             timestamp: message.ts,
             name: failed
         });
-        await say({ text: "There are no data records to display.", thread_ts: message.ts });
+        await say({ text: "I couldn't find any results for your query *" + message.text.trim().split('>').join('`>`').split('@').join('`@`').split('<').join('`<`') + "*.", thread_ts: message.ts });
         return;
     }
 
